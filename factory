@@ -1,0 +1,57 @@
+using System.Net.Http.Headers;
+using System.Text.Json;
+
+public interface IApiClientFactory
+{
+    Task<ApiClient> CreateAsync();
+}
+
+public class ApiClientFactory : IApiClientFactory
+{
+    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly IConfiguration _config;
+
+    public ApiClientFactory(IHttpClientFactory httpClientFactory, IConfiguration config)
+    {
+        _httpClientFactory = httpClientFactory;
+        _config = config;
+    }
+
+    public async Task<ApiClient> CreateAsync()
+    {
+        var httpClient = _httpClientFactory.CreateClient();
+
+        var token = await GetBearerTokenAsync();
+
+        httpClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        return new ApiClient(httpClient);
+    }
+
+    private async Task<string> GetBearerTokenAsync()
+    {
+        var tokenEndpoint = _config["Idp:TokenEndpoint"];
+        var clientId = _config["Idp:ClientId"];
+        var clientSecret = _config["Idp:ClientSecret"];
+        var scope = _config["Idp:Scope"];
+
+        var httpClient = _httpClientFactory.CreateClient();
+
+        var body = new Dictionary<string, string>
+        {
+            {"grant_type", "client_credentials"},
+            {"client_id", clientId},
+            {"client_secret", clientSecret},
+            {"scope", scope}
+        };
+
+        var response = await httpClient.PostAsync(tokenEndpoint, new FormUrlEncodedContent(body));
+        response.EnsureSuccessStatusCode();
+
+        var json = await response.Content.ReadAsStringAsync();
+        var token = JsonDocument.Parse(json).RootElement.GetProperty("access_token").GetString();
+
+        return token ?? throw new InvalidOperationException("Impossible de récupérer le token");
+    }
+}
