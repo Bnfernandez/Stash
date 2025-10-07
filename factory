@@ -1,57 +1,72 @@
-using System.Net.Http.Headers;
+using System.Net.Http;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 
-public interface IApiClientFactory
+public class DocuSignESignatureHealthCheck : IHealthCheck
 {
-    Task<ApiClient> CreateAsync();
-}
+    private readonly HttpClient _httpClient;
+    private const string StatusUrl = "https://status.docusign.com/api/v2/summary.json";
 
-public class ApiClientFactory : IApiClientFactory
-{
-    private readonly IHttpClientFactory _httpClientFactory;
-    private readonly IConfiguration _config;
-
-    public ApiClientFactory(IHttpClientFactory httpClientFactory, IConfiguration config)
+    public DocuSignESignatureHealthCheck(HttpClient httpClient)
     {
-        _httpClientFactory = httpClientFactory;
-        _config = config;
+        _httpClient = httpClient;
     }
 
-    public async Task<ApiClient> CreateAsync()
+    public async Task<HealthCheckResult> CheckHealthAsync(
+        HealthCheckContext context,
+        CancellationToken cancellationToken = default)
     {
-        var httpClient = _httpClientFactory.CreateClient();
-
-        var token = await GetBearerTokenAsync();
-
-        httpClient.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", token);
-
-        return new ApiClient(httpClient);
-    }
-
-    private async Task<string> GetBearerTokenAsync()
-    {
-        var tokenEndpoint = _config["Idp:TokenEndpoint"];
-        var clientId = _config["Idp:ClientId"];
-        var clientSecret = _config["Idp:ClientSecret"];
-        var scope = _config["Idp:Scope"];
-
-        var httpClient = _httpClientFactory.CreateClient();
-
-        var body = new Dictionary<string, string>
+        try
         {
-            {"grant_type", "client_credentials"},
-            {"client_id", clientId},
-            {"client_secret", clientSecret},
-            {"scope", scope}
-        };
+            using var response = await _httpClient.GetAsync(StatusUrl, cancellationToken);
 
-        var response = await httpClient.PostAsync(tokenEndpoint, new FormUrlEncodedContent(body));
-        response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                return HealthCheckResult.Unhealthy(
+                    $"DocuSign status API returned {(int)response.StatusCode}.");
+            }
 
-        var json = await response.Content.ReadAsStringAsync();
-        var token = JsonDocument.Parse(json).RootElement.GetProperty("access_token").GetString();
+            var json = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var doc = JsonDocument.Parse(json);
 
-        return token ?? throw new InvalidOperationException("Impossible de récupérer le token");
+            // Find the eSignature component
+            var components = doc.RootElement.GetProperty("components").EnumerateArray();
+            string? eSignStatus = null;
+
+            foreach (var component in components)
+            {
+                var name = component.GetProperty("name").GetString();
+                if (name != null && name.Contains("eSignature", StringComparison.OrdinalIgnoreCase))
+                {
+                    eSignStatus = component.GetProperty("status").GetString();
+                    break;
+                }
+            }
+
+            if (string.IsNullOrEmpty(eSignStatus))
+            {
+                return HealthCheckResult.Degraded("Unable to locate eSignature component in DocuSign status response.");
+            }
+
+            // Typical values: "operational", "degraded_performance", "partial_outage", "major_outage"
+            return eSignStatus.Equals("operational", StringComparison.OrdinalIgnoreCase)
+                ? HealthCheckResult.Healthy("DocuSign eSignature API is operational.")
+                : HealthCheckResult.Degraded($"DocuSign eSignature API reports: {eSignStatus}");
+        }
+        catch (Exception ex)
+        {
+            return HealthCheckResult.Unhealthy("Error checking DocuSign eSignature API status.", ex);
+        }
     }
 }
+
+builder.Services.AddHttpClient<DocuSignESignatureHealthCheck>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(5);
+});
+
+builder.Services.AddHealthChecks()
+    .AddCheck<DocuSignESignatureHealthCheck>("docusign_esignature");
+app.MapHealthChecks("/health");
