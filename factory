@@ -3,15 +3,17 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Hosting;
 
-public class DocuSignESignatureHealthCheck : IHealthCheck
+public class DocuSignAdaptiveHealthCheck : IHealthCheck
 {
     private readonly HttpClient _httpClient;
-    private const string StatusUrl = "https://status.docusign.com/api/v2/summary.json";
+    private readonly IWebHostEnvironment _env;
 
-    public DocuSignESignatureHealthCheck(HttpClient httpClient)
+    public DocuSignAdaptiveHealthCheck(HttpClient httpClient, IWebHostEnvironment env)
     {
         _httpClient = httpClient;
+        _env = env;
     }
 
     public async Task<HealthCheckResult> CheckHealthAsync(
@@ -20,53 +22,51 @@ public class DocuSignESignatureHealthCheck : IHealthCheck
     {
         try
         {
-            using var response = await _httpClient.GetAsync(StatusUrl, cancellationToken);
-
-            if (!response.IsSuccessStatusCode)
+            if (_env.IsProduction())
             {
-                return HealthCheckResult.Unhealthy(
-                    $"DocuSign status API returned {(int)response.StatusCode}.");
-            }
+                // ✅ Production: use the official DocuSign status API
+                const string statusUrl = "https://status.docusign.com/api/v2/summary.json";
+                using var response = await _httpClient.GetAsync(statusUrl, cancellationToken);
 
-            var json = await response.Content.ReadAsStringAsync(cancellationToken);
-            using var doc = JsonDocument.Parse(json);
+                if (!response.IsSuccessStatusCode)
+                    return HealthCheckResult.Unhealthy($"DocuSign status API returned {(int)response.StatusCode}");
 
-            // Find the eSignature component
-            var components = doc.RootElement.GetProperty("components").EnumerateArray();
-            string? eSignStatus = null;
+                var json = await response.Content.ReadAsStringAsync(cancellationToken);
+                using var doc = JsonDocument.Parse(json);
 
-            foreach (var component in components)
-            {
-                var name = component.GetProperty("name").GetString();
-                if (name != null && name.Contains("eSignature", StringComparison.OrdinalIgnoreCase))
+                // Extract eSignature component status
+                string? eSignStatus = null;
+                foreach (var component in doc.RootElement.GetProperty("components").EnumerateArray())
                 {
-                    eSignStatus = component.GetProperty("status").GetString();
-                    break;
+                    var name = component.GetProperty("name").GetString();
+                    if (name != null && name.Contains("eSignature", StringComparison.OrdinalIgnoreCase))
+                    {
+                        eSignStatus = component.GetProperty("status").GetString();
+                        break;
+                    }
                 }
-            }
 
-            if (string.IsNullOrEmpty(eSignStatus))
+                if (string.IsNullOrEmpty(eSignStatus))
+                    return HealthCheckResult.Degraded("Unable to locate eSignature component in DocuSign status.");
+
+                return eSignStatus.Equals("operational", StringComparison.OrdinalIgnoreCase)
+                    ? HealthCheckResult.Healthy("DocuSign eSignature (prod) is operational.")
+                    : HealthCheckResult.Degraded($"DocuSign eSignature (prod) reports: {eSignStatus}");
+            }
+            else
             {
-                return HealthCheckResult.Degraded("Unable to locate eSignature component in DocuSign status response.");
-            }
+                // ✅ Non-prod: use the demo/sandbox REST API directly
+                const string demoUrl = "https://demo.docusign.net/restapi/service_information";
+                using var response = await _httpClient.GetAsync(demoUrl, cancellationToken);
 
-            // Typical values: "operational", "degraded_performance", "partial_outage", "major_outage"
-            return eSignStatus.Equals("operational", StringComparison.OrdinalIgnoreCase)
-                ? HealthCheckResult.Healthy("DocuSign eSignature API is operational.")
-                : HealthCheckResult.Degraded($"DocuSign eSignature API reports: {eSignStatus}");
+                return response.IsSuccessStatusCode
+                    ? HealthCheckResult.Healthy("DocuSign eSignature (sandbox) API is reachable.")
+                    : HealthCheckResult.Unhealthy($"DocuSign sandbox API returned {(int)response.StatusCode}.");
+            }
         }
         catch (Exception ex)
         {
-            return HealthCheckResult.Unhealthy("Error checking DocuSign eSignature API status.", ex);
+            return HealthCheckResult.Unhealthy("Error checking DocuSign health.", ex);
         }
     }
 }
-
-builder.Services.AddHttpClient<DocuSignESignatureHealthCheck>(client =>
-{
-    client.Timeout = TimeSpan.FromSeconds(5);
-});
-
-builder.Services.AddHealthChecks()
-    .AddCheck<DocuSignESignatureHealthCheck>("docusign_esignature");
-app.MapHealthChecks("/health");
