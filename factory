@@ -1,72 +1,72 @@
+using System;
 using System.Net.Http;
-using System.Text.Json;
-using System.Threading;
+using System.Net.Http.Headers;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Diagnostics.HealthChecks;
-using Microsoft.Extensions.Hosting;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
-public class DocuSignAdaptiveHealthCheck : IHealthCheck
+public class IdEvidenceService
 {
+    private readonly string _basePath;  // e.g. "https://demo.docusign.net/restapi"
+    private readonly string _accessToken;
     private readonly HttpClient _httpClient;
-    private readonly IWebHostEnvironment _env;
 
-    public DocuSignAdaptiveHealthCheck(HttpClient httpClient, IWebHostEnvironment env)
+    public IdEvidenceService(string basePath, string accessToken)
     {
-        _httpClient = httpClient;
-        _env = env;
+        _basePath = basePath.TrimEnd('/');
+        _accessToken = accessToken;
+
+        _httpClient = new HttpClient();
+        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
     }
 
-    public async Task<HealthCheckResult> CheckHealthAsync(
-        HealthCheckContext context,
-        CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Get the resource token for a recipient (step 3).
+    /// You need to call the EnvelopesRecipients:createRecipientProofFileResourceToken endpoint.
+    /// </summary>
+    public async Task<string> GetResourceTokenAsync(string accountId, string envelopeId, string recipientId)
     {
-        try
-        {
-            if (_env.IsProduction())
-            {
-                // ✅ Production: use the official DocuSign status API
-                const string statusUrl = "https://status.docusign.com/api/v2/summary.json";
-                using var response = await _httpClient.GetAsync(statusUrl, cancellationToken);
+        // Construct the URL for resource token request (doc says to use EnvelopesRecipients:createRecipientProofFileResourceToken).
+        string url = $"{_basePath}/v2.1/accounts/{accountId}/envelopes/{envelopeId}/recipients/{recipientId}/proof_file_resource_token";
 
-                if (!response.IsSuccessStatusCode)
-                    return HealthCheckResult.Unhealthy($"DocuSign status API returned {(int)response.StatusCode}");
+        var response = await _httpClient.PostAsync(url, null);
+        response.EnsureSuccessStatusCode();
+        string content = await response.Content.ReadAsStringAsync();
+        var obj = JObject.Parse(content);
+        string resourceToken = (string)obj["resourceToken"];
+        return resourceToken;
+    }
 
-                var json = await response.Content.ReadAsStringAsync(cancellationToken);
-                using var doc = JsonDocument.Parse(json);
+    /// <summary>
+    /// Retrieve ID Evidence events (step 4) using listEventsByEntityIdFormat.
+    /// </summary>
+    public async Task<JObject> GetIdEvidenceEventsAsync(string accountId, string envelopeId, string recipientId, string resourceToken, DateTime? fromDate = null, DateTime? toDate = null)
+    {
+        // The iEvidence events path from docs: /idevidence/events/list/{entityIdFormat}
+        // Where entityIdFormat might be like: "envelopeId:recipientId"
+        // Based on docs for listEventsByEntityIdFormat  [oai_citation:1‡Docusign Developer Center](https://developers.docusign.com/docs/idevidence-api/reference/idevidence/events/list/?utm_source=chatgpt.com)
+        string entityIdFormat = $"{envelopeId}:{recipientId}";
 
-                // Extract eSignature component status
-                string? eSignStatus = null;
-                foreach (var component in doc.RootElement.GetProperty("components").EnumerateArray())
-                {
-                    var name = component.GetProperty("name").GetString();
-                    if (name != null && name.Contains("eSignature", StringComparison.OrdinalIgnoreCase))
-                    {
-                        eSignStatus = component.GetProperty("status").GetString();
-                        break;
-                    }
-                }
+        string url = $"{_basePath}/v2.1/accounts/{accountId}/idevidence/events/list/{entityIdFormat}";
 
-                if (string.IsNullOrEmpty(eSignStatus))
-                    return HealthCheckResult.Degraded("Unable to locate eSignature component in DocuSign status.");
+        // Append query parameters if from/to dates are provided
+        var query = System.Web.HttpUtility.ParseQueryString(string.Empty);
+        if (fromDate != null)
+            query["from_date"] = fromDate.Value.ToString("o");  // ISO 8601
+        if (toDate != null)
+            query["to_date"] = toDate.Value.ToString("o");
 
-                return eSignStatus.Equals("operational", StringComparison.OrdinalIgnoreCase)
-                    ? HealthCheckResult.Healthy("DocuSign eSignature (prod) is operational.")
-                    : HealthCheckResult.Degraded($"DocuSign eSignature (prod) reports: {eSignStatus}");
-            }
-            else
-            {
-                // ✅ Non-prod: use the demo/sandbox REST API directly
-                const string demoUrl = "https://demo.docusign.net/restapi/service_information";
-                using var response = await _httpClient.GetAsync(demoUrl, cancellationToken);
+        if (query.Count > 0)
+            url += "?" + query.ToString();
 
-                return response.IsSuccessStatusCode
-                    ? HealthCheckResult.Healthy("DocuSign eSignature (sandbox) API is reachable.")
-                    : HealthCheckResult.Unhealthy($"DocuSign sandbox API returned {(int)response.StatusCode}.");
-            }
-        }
-        catch (Exception ex)
-        {
-            return HealthCheckResult.Unhealthy("Error checking DocuSign health.", ex);
-        }
+        // Include the resource token header as required
+        var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Add("X-DocuSign-Resource-Token", resourceToken);
+
+        var resp = await _httpClient.SendAsync(request);
+        resp.EnsureSuccessStatusCode();
+        string respContent = await resp.Content.ReadAsStringAsync();
+        var json = JObject.Parse(respContent);
+        return json;
     }
 }
