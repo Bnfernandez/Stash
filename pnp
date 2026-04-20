@@ -104,6 +104,16 @@ try {
         }
     }
 
+    foreach ($ctName in $contentTypes) {
+
+        Write-Host "Propagation Content Type : $ctName" -ForegroundColor Cyan
+
+        $ct = Get-PnPContentType -Identity $ctName
+
+        $ct.Update($true)
+        Invoke-PnPQuery
+    }
+
     Write-Host "✔ Terminé avec succès" -ForegroundColor Green
 }
 
