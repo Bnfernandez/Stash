@@ -71,12 +71,13 @@ try {
                     -Type Text `
                     -Group "Custom Columns"
                 
-                # Appliquer MaxLength après création
+                # Appliquer MaxLength après création via Set-PnPField
                 if ($field.MaxLength) {
-                    $createdField = Get-PnPField -Identity $field.InternalName
-                    $createdField.MaxLength = $field.MaxLength
-                    $createdField.Update()
-                    Invoke-PnPQuery
+                    Start-Sleep -Milliseconds 500
+                    Set-PnPField `
+                        -Identity $field.InternalName `
+                        -Values @{ MaxLength = $field.MaxLength } `
+                        -ErrorAction SilentlyContinue
                 }
             }
             else {
