@@ -1,0 +1,127 @@
+
+# =========================
+# CONFIG CONTENT TYPES
+# =========================
+
+$contentTypes = @(
+    "ContentType1",
+    "ContentType2",
+    "ContentType3",
+    "ContentType4",
+    "ContentType5"
+)
+
+# =========================
+# CONFIG FIELDS
+# =========================
+
+$fields = @(
+    @{
+        DisplayName = "Statut"
+        InternalName = "Statut"
+        Type = "Choice"
+        Choices = @("Actif", "Inactif", "En attente")
+    },
+    @{
+        DisplayName = "Priorité"
+        InternalName = "Priorite"
+        Type = "Choice"
+        Choices = @("Haute", "Moyenne", "Basse")
+    },
+    @{
+        DisplayName = "Code Projet"
+        InternalName = "CodeProjet"
+        Type = "Text"
+        MaxLength = 15
+    }
+)
+
+$createdFields = @()
+$addedMappings = @()
+
+# =========================
+# SCRIPT
+# =========================
+
+try {
+
+    foreach ($field in $fields) {
+
+        $existing = Get-PnPField -Identity $field.InternalName -ErrorAction SilentlyContinue
+
+        if (-not $existing) {
+
+            Write-Host "Création champ : $($field.DisplayName)" -ForegroundColor Cyan
+
+            if ($field.Type -eq "Choice") {
+
+                Add-PnPField `
+                    -DisplayName $field.DisplayName `
+                    -InternalName $field.InternalName `
+                    -Type Choice `
+                    -Choices $field.Choices `
+                    -Group "Custom Columns"
+
+            }
+            elseif ($field.Type -eq "Text" -and $field.MaxLength) {
+
+                Add-PnPField `
+                    -DisplayName $field.DisplayName `
+                    -InternalName $field.InternalName `
+                    -Type Text `
+                    -MaxLength $field.MaxLength `
+                    -Group "Custom Columns"
+
+            }
+            else {
+
+                Add-PnPField `
+                    -DisplayName $field.DisplayName `
+                    -InternalName $field.InternalName `
+                    -Type $field.Type `
+                    -Group "Custom Columns"
+            }
+
+            $createdFields += $field.InternalName
+        }
+    }
+
+    foreach ($ctName in $contentTypes) {
+
+        foreach ($field in $fields) {
+
+            Write-Host "Ajout $($field.InternalName) -> $ctName" -ForegroundColor Yellow
+
+            Add-PnPFieldToContentType `
+                -Field $field.InternalName `
+                -ContentType $ctName `
+                -ErrorAction Stop
+
+            $addedMappings += @{
+                Field = $field.InternalName
+                ContentType = $ctName
+            }
+        }
+    }
+
+    Write-Host "✔ Terminé avec succès" -ForegroundColor Green
+}
+
+catch {
+
+    Write-Host "❌ Erreur → rollback..." -ForegroundColor Red
+
+    foreach ($m in $addedMappings) {
+        Remove-PnPFieldFromContentType `
+            -Field $m.Field `
+            -ContentType $m.ContentType `
+            -ErrorAction SilentlyContinue
+    }
+
+    foreach ($f in $createdFields) {
+        Remove-PnPField -Identity $f -Force -ErrorAction SilentlyContinue
+    }
+
+    Write-Host "✔ Rollback terminé" -ForegroundColor Green
+    throw
+}
