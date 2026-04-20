@@ -36,102 +36,109 @@ $fields = @(
     }
 )
 
-$createdFields = @()
-$addedMappings = @()
-
 # =========================
-# SCRIPT
+# 1. ENSURE FIELDS (NO UPDATE)
 # =========================
 
-try {
+foreach ($field in $fields) {
+
+    $existing = Get-PnPField -Identity $field.InternalName -ErrorAction SilentlyContinue
+
+    if (-not $existing) {
+
+        Write-Host "Création champ : $($field.InternalName)" -ForegroundColor Cyan
+
+        if ($field.Type -eq "Choice") {
+
+            Add-PnPField `
+                -DisplayName $field.DisplayName `
+                -InternalName $field.InternalName `
+                -Type Choice `
+                -Choices $field.Choices `
+                -Group "Custom Columns"
+        }
+        elseif ($field.Type -eq "Text" -and $field.MaxLength) {
+
+            Add-PnPField `
+                -DisplayName $field.DisplayName `
+                -InternalName $field.InternalName `
+                -Type Text `
+                -MaxLength $field.MaxLength `
+                -Group "Custom Columns"
+        }
+        else {
+
+            Add-PnPField `
+                -DisplayName $field.DisplayName `
+                -InternalName $field.InternalName `
+                -Type $field.Type `
+                -Group "Custom Columns"
+        }
+    }
+    else {
+        Write-Host "Champ existant : $($field.InternalName)" -ForegroundColor DarkGray
+    }
+}
+
+# =========================
+# 2. ENSURE FIELDS IN CONTENT TYPES + REQUIRED
+# =========================
+
+foreach ($ctName in $contentTypes) {
+
+    Write-Host "Analyse CT : $ctName" -ForegroundColor Cyan
+
+    $ct = Get-PnPContentType -Identity $ctName
+    Get-PnPProperty -ClientObject $ct -Property FieldLinks
+
+    $updated = $false
 
     foreach ($field in $fields) {
 
-        $existing = Get-PnPField -Identity $field.InternalName -ErrorAction SilentlyContinue
+        $fieldLink = $ct.FieldLinks | Where-Object { $_.Name -eq $field.InternalName }
 
-        if (-not $existing) {
-
-            Write-Host "Création champ : $($field.DisplayName)" -ForegroundColor Cyan
-
-            if ($field.Type -eq "Choice") {
-
-                Add-PnPField `
-                    -DisplayName $field.DisplayName `
-                    -InternalName $field.InternalName `
-                    -Type Choice `
-                    -Choices $field.Choices `
-                    -Group "Custom Columns"
-
-            }
-            elseif ($field.Type -eq "Text" -and $field.MaxLength) {
-
-                Add-PnPField `
-                    -DisplayName $field.DisplayName `
-                    -InternalName $field.InternalName `
-                    -Type Text `
-                    -MaxLength $field.MaxLength `
-                    -Group "Custom Columns"
-
-            }
-            else {
-
-                Add-PnPField `
-                    -DisplayName $field.DisplayName `
-                    -InternalName $field.InternalName `
-                    -Type $field.Type `
-                    -Group "Custom Columns"
-            }
-
-            $createdFields += $field.InternalName
-        }
-    }
-
-    foreach ($ctName in $contentTypes) {
-
-        foreach ($field in $fields) {
+        # Ajouter si absent
+        if (-not $fieldLink) {
 
             Write-Host "Ajout $($field.InternalName) -> $ctName" -ForegroundColor Yellow
 
             Add-PnPFieldToContentType `
                 -Field $field.InternalName `
-                -ContentType $ctName `
-                -ErrorAction Stop
+                -ContentType $ctName
 
-            $addedMappings += @{
-                Field = $field.InternalName
-                ContentType = $ctName
+            # reload
+            $ct = Get-PnPContentType -Identity $ctName
+            Get-PnPProperty -ClientObject $ct -Property FieldLinks
+
+            $fieldLink = $ct.FieldLinks | Where-Object { $_.Name -eq $field.InternalName }
+            $updated = $true
+        }
+
+        # Gestion Required
+        if ($fieldLink -and $field.Required -ne $null) {
+
+            if ($fieldLink.Required -ne $field.Required) {
+
+                Write-Host "Required=$($field.Required) pour $($field.InternalName) dans $ctName" -ForegroundColor Yellow
+
+                $fieldLink.Required = $field.Required
+                $updated = $true
             }
         }
     }
 
-    foreach ($ctName in $contentTypes) {
+    # Apply update + propagation si nécessaire
+    if ($updated) {
 
-        Write-Host "Propagation Content Type : $ctName" -ForegroundColor Cyan
-
-        $ct = Get-PnPContentType -Identity $ctName
+        Write-Host "Mise à jour CT : $ctName" -ForegroundColor Cyan
 
         $ct.Update($true)
         Invoke-PnPQuery
     }
-
-    Write-Host "✔ Terminé avec succès" -ForegroundColor Green
+    else {
+        Write-Host "Aucune modification pour $ctName" -ForegroundColor DarkGray
+    }
 }
 
-catch {
+Write-Host "✔ Script terminé (idempotent)" -ForegroundColor Green
 
-    Write-Host "❌ Erreur → rollback..." -ForegroundColor Red
-
-    foreach ($m in $addedMappings) {
-        Remove-PnPFieldFromContentType `
-            -Field $m.Field `
-            -ContentType $m.ContentType `
-            -ErrorAction SilentlyContinue
-    }
-
-    foreach ($f in $createdFields) {
-        Remove-PnPField -Identity $f -Force -ErrorAction SilentlyContinue
-    }
-
-    Write-Host "✔ Rollback terminé" -ForegroundColor Green
-    throw
-}
