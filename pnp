@@ -96,6 +96,10 @@ try {
         Write-Host "Analyse CT : $ctName" -ForegroundColor Cyan
 
         $ct = Get-PnPContentType -Identity $ctName
+        $ctx = Get-PnPContext
+        $ctx.Load($ct.Fields)
+        Invoke-PnPQuery
+        
         $ctFields = $ct.Fields
 
         foreach ($field in $fields) {
@@ -130,6 +134,9 @@ try {
         Write-Host "Propagation CT : $ctName" -ForegroundColor Cyan
 
         $ct = Get-PnPContentType -Identity $ctName
+        $ctx = Get-PnPContext
+        $ctx.Load($ct)
+        Invoke-PnPQuery
 
         $ct.Update($true)
         Invoke-PnPQuery
