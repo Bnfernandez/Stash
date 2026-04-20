@@ -36,9 +36,7 @@ $fields = @(
     }
 )
 
-# =========================
-# 1. ENSURE FIELDS (NO UPDATE)
-# =========================
+
 
 foreach ($field in $fields) {
 
@@ -81,64 +79,44 @@ foreach ($field in $fields) {
 }
 
 # =========================
-# 2. ENSURE FIELDS IN CONTENT TYPES + REQUIRED
+# 2. ENSURE FIELDS IN CONTENT TYPES
 # =========================
 
 foreach ($ctName in $contentTypes) {
 
     Write-Host "Analyse CT : $ctName" -ForegroundColor Cyan
 
-    $ct = Get-PnPContentType -Identity $ctName
-    Get-PnPProperty -ClientObject $ct -Property FieldLinks
-
-    $updated = $false
+    # Récupération des champs déjà présents
+    $ctFields = Get-PnPField -ContentType $ctName
 
     foreach ($field in $fields) {
 
-        $fieldLink = $ct.FieldLinks | Where-Object { $_.Name -eq $field.InternalName }
+        $exists = $ctFields | Where-Object { $_.InternalName -eq $field.InternalName }
 
-        # Ajouter si absent
-        if (-not $fieldLink) {
+        if (-not $exists) {
 
             Write-Host "Ajout $($field.InternalName) -> $ctName" -ForegroundColor Yellow
 
             Add-PnPFieldToContentType `
                 -Field $field.InternalName `
                 -ContentType $ctName
-
-            # reload
-            $ct = Get-PnPContentType -Identity $ctName
-            Get-PnPProperty -ClientObject $ct -Property FieldLinks
-
-            $fieldLink = $ct.FieldLinks | Where-Object { $_.Name -eq $field.InternalName }
-            $updated = $true
         }
-
-        # Gestion Required
-        if ($fieldLink -and $field.Required -ne $null) {
-
-            if ($fieldLink.Required -ne $field.Required) {
-
-                Write-Host "Required=$($field.Required) pour $($field.InternalName) dans $ctName" -ForegroundColor Yellow
-
-                $fieldLink.Required = $field.Required
-                $updated = $true
-            }
+        else {
+            Write-Host "Déjà présent : $($field.InternalName) dans $ctName" -ForegroundColor DarkGray
         }
-    }
-
-    # Apply update + propagation si nécessaire
-    if ($updated) {
-
-        Write-Host "Mise à jour CT : $ctName" -ForegroundColor Cyan
-
-        $ct.Update($true)
-        Invoke-PnPQuery
-    }
-    else {
-        Write-Host "Aucune modification pour $ctName" -ForegroundColor DarkGray
     }
 }
 
-Write-Host "✔ Script terminé (idempotent)" -ForegroundColor Green
+# =========================
+# 3. PROPAGATION
+# =========================
 
+foreach ($ctName in $contentTypes) {
+
+    Write-Host "Propagation CT : $ctName" -ForegroundColor Cyan
+
+    $ct = Get-PnPContentType -Identity $ctName
+
+    $ct.Update($true)
+    Invoke-PnPQuery
+}
