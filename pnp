@@ -37,86 +37,136 @@ $fields = @(
 )
 
 
+# Pour rollback
+$createdFields = @()
+$addedMappings = @()
 
-foreach ($field in $fields) {
+try {
 
-    $existing = Get-PnPField -Identity $field.InternalName -ErrorAction SilentlyContinue
-
-    if (-not $existing) {
-
-        Write-Host "Création champ : $($field.InternalName)" -ForegroundColor Cyan
-
-        if ($field.Type -eq "Choice") {
-
-            Add-PnPField `
-                -DisplayName $field.DisplayName `
-                -InternalName $field.InternalName `
-                -Type Choice `
-                -Choices $field.Choices `
-                -Group "Custom Columns"
-        }
-        elseif ($field.Type -eq "Text" -and $field.MaxLength) {
-
-            Add-PnPField `
-                -DisplayName $field.DisplayName `
-                -InternalName $field.InternalName `
-                -Type Text `
-                -MaxLength $field.MaxLength `
-                -Group "Custom Columns"
-        }
-        else {
-
-            Add-PnPField `
-                -DisplayName $field.DisplayName `
-                -InternalName $field.InternalName `
-                -Type $field.Type `
-                -Group "Custom Columns"
-        }
-    }
-    else {
-        Write-Host "Champ existant : $($field.InternalName)" -ForegroundColor DarkGray
-    }
-}
-
-# =========================
-# 2. ENSURE FIELDS IN CONTENT TYPES
-# =========================
-
-foreach ($ctName in $contentTypes) {
-
-    Write-Host "Analyse CT : $ctName" -ForegroundColor Cyan
-
-    # Récupération des champs déjà présents
-    $ctFields = Get-PnPField -ContentType $ctName
-
+    # =========================
+    # 1. ENSURE FIELDS
+    # =========================
     foreach ($field in $fields) {
 
-        $exists = $ctFields | Where-Object { $_.InternalName -eq $field.InternalName }
+        $existing = Get-PnPField -Identity $field.InternalName -ErrorAction SilentlyContinue
 
-        if (-not $exists) {
+        if (-not $existing) {
 
-            Write-Host "Ajout $($field.InternalName) -> $ctName" -ForegroundColor Yellow
+            Write-Host "Création champ : $($field.InternalName)" -ForegroundColor Cyan
 
-            Add-PnPFieldToContentType `
-                -Field $field.InternalName `
-                -ContentType $ctName
+            if ($field.Type -eq "Choice") {
+
+                Add-PnPField `
+                    -DisplayName $field.DisplayName `
+                    -InternalName $field.InternalName `
+                    -Type Choice `
+                    -Choices $field.Choices `
+                    -Group "Custom Columns"
+            }
+            elseif ($field.Type -eq "Text" -and $field.MaxLength) {
+
+                Add-PnPField `
+                    -DisplayName $field.DisplayName `
+                    -InternalName $field.InternalName `
+                    -Type Text `
+                    -MaxLength $field.MaxLength `
+                    -Group "Custom Columns"
+            }
+            else {
+
+                Add-PnPField `
+                    -DisplayName $field.DisplayName `
+                    -InternalName $field.InternalName `
+                    -Type $field.Type `
+                    -Group "Custom Columns"
+            }
+
+            $createdFields += $field.InternalName
         }
         else {
-            Write-Host "Déjà présent : $($field.InternalName) dans $ctName" -ForegroundColor DarkGray
+            Write-Host "Champ existant : $($field.InternalName)" -ForegroundColor DarkGray
         }
     }
+
+    # =========================
+    # 2. ENSURE FIELDS IN CONTENT TYPES
+    # =========================
+    foreach ($ctName in $contentTypes) {
+
+        Write-Host "Analyse CT : $ctName" -ForegroundColor Cyan
+
+        $ctFields = Get-PnPField -ContentType $ctName
+
+        foreach ($field in $fields) {
+
+            $exists = $ctFields | Where-Object { $_.InternalName -eq $field.InternalName }
+
+            if (-not $exists) {
+
+                Write-Host "Ajout $($field.InternalName) -> $ctName" -ForegroundColor Yellow
+
+                Add-PnPFieldToContentType `
+                    -Field $field.InternalName `
+                    -ContentType $ctName `
+                    -ErrorAction Stop
+
+                $addedMappings += @{
+                    Field = $field.InternalName
+                    ContentType = $ctName
+                }
+            }
+            else {
+                Write-Host "Déjà présent : $($field.InternalName) dans $ctName" -ForegroundColor DarkGray
+            }
+        }
+    }
+
+    # =========================
+    # 3. PROPAGATION
+    # =========================
+    foreach ($ctName in $contentTypes) {
+
+        Write-Host "Propagation CT : $ctName" -ForegroundColor Cyan
+
+        $ct = Get-PnPContentType -Identity $ctName
+
+        $ct.Update($true)
+        Invoke-PnPQuery
+    }
+
+    Write-Host "✔ Script terminé avec succès" -ForegroundColor Green
 }
 
-# =========================
-# 3. PROPAGATION
-# =========================
+catch {
 
-foreach ($ctName in $contentTypes) {
+    Write-Host "❌ Erreur détectée → rollback..." -ForegroundColor Red
 
-    Write-Host "Propagation CT : $ctName" -ForegroundColor Cyan
+    # -------------------------
+    # ROLLBACK CONTENT TYPES
+    # -------------------------
+    foreach ($m in $addedMappings) {
 
-    $ct = Get-PnPContentType -Identity $ctName
+        Write-Host "Rollback : $($m.Field) de $($m.ContentType)" -ForegroundColor DarkYellow
 
-    $ct.Update($true)
-    Invoke-PnPQuery
+        Remove-PnPFieldFromContentType `
+            -Field $m.Field `
+            -ContentType $m.ContentType `
+            -ErrorAction SilentlyContinue
+    }
+
+    # -------------------------
+    # ROLLBACK FIELDS
+    # -------------------------
+    foreach ($f in $createdFields) {
+
+        Write-Host "Suppression champ : $f" -ForegroundColor DarkYellow
+
+        Remove-PnPField `
+            -Identity $f `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
+
+    Write-Host "✔ Rollback terminé" -ForegroundColor Green
+    throw
 }
