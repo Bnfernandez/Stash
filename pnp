@@ -95,7 +95,8 @@ try {
 
         Write-Host "Analyse CT : $ctName" -ForegroundColor Cyan
 
-        $ctFields = Get-PnPField -ContentType $ctName
+        $ct = Get-PnPContentType -Identity $ctName
+        $ctFields = $ct.Fields
 
         foreach ($field in $fields) {
 
