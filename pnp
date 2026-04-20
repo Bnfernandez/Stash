@@ -63,14 +63,21 @@ try {
                     -Choices $field.Choices `
                     -Group "Custom Columns"
             }
-            elseif ($field.Type -eq "Text" -and $field.MaxLength) {
+            elseif ($field.Type -eq "Text") {
 
                 Add-PnPField `
                     -DisplayName $field.DisplayName `
                     -InternalName $field.InternalName `
                     -Type Text `
-                    -MaxLength $field.MaxLength `
                     -Group "Custom Columns"
+                
+                # Appliquer MaxLength après création
+                if ($field.MaxLength) {
+                    $createdField = Get-PnPField -Identity $field.InternalName
+                    $createdField.MaxLength = $field.MaxLength
+                    $createdField.Update()
+                    Invoke-PnPQuery
+                }
             }
             else {
 
