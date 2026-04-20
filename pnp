@@ -71,13 +71,19 @@ try {
                     -Type Text `
                     -Group "Custom Columns"
                 
-                # Appliquer MaxLength après création via Set-PnPField
+                # Appliquer MaxLength après création en modifiant le schéma XML
                 if ($field.MaxLength) {
                     Start-Sleep -Milliseconds 500
-                    Set-PnPField `
-                        -Identity $field.InternalName `
-                        -Values @{ MaxLength = $field.MaxLength } `
-                        -ErrorAction SilentlyContinue
+                    $createdField = Get-PnPField -Identity $field.InternalName
+                    $ctx = Get-PnPContext
+                    $ctx.Load($createdField)
+                    Invoke-PnPQuery
+                    
+                    $xml = [xml]$createdField.SchemaXml
+                    $xml.Field.SetAttribute("MaxLength", $field.MaxLength)
+                    $createdField.SchemaXml = $xml.OuterXml
+                    $createdField.Update()
+                    Invoke-PnPQuery
                 }
             }
             else {
