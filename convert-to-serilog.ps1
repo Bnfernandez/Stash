@@ -74,51 +74,6 @@ function Infer-LogLevel {
     return 'Information'
 }
 
-function Convert-StringInterpolationToStructured {
-    param([string]$LogMessage)
-    
-    # Match $"..." pattern (string interpolation)
-    if ($LogMessage -match '\$"([^"]*(\{[^}]+\}[^"]*)*)"(.*)') {
-        $interpolatedString = $matches[1]
-        $remainder = $matches[3]
-        
-        # Extract variables from {...}
-        $variables = @()
-        $formatString = $interpolatedString
-        
-        # Find all {variableName} patterns and extract variables
-        $pattern = '\{([^}:]+)(?::[^}]*)?\}'
-        $matches_var = [regex]::Matches($interpolatedString, $pattern)
-        
-        foreach ($match in $matches_var) {
-            $varName = $match.Groups[1].Value.Trim()
-            $variables += $varName
-            
-            # Capitalize property name for structured logging convention
-            $capitalizedName = [char]::ToUpper($varName[0]) + $varName.Substring(1)
-            $formatString = $formatString -replace "\{$varName(?::[^}]*)?\}", "{$capitalizedName}"
-        }
-        
-        # Build the structured log call
-        if ($variables.Count -gt 0) {
-            $varList = $variables -join ", "
-            return @{
-                Format = "`"$formatString`""
-                Variables = $varList
-                Changed = $true
-            }
-        }
-    }
-    
-    # If not an interpolated string, check if it already looks structured
-    # (has {Property} placeholders with variables after)
-    return @{
-        Format = $LogMessage
-        Variables = ""
-        Changed = $false
-    }
-}
-
 function Convert-ILoggerToSerilog {
     param(
         [string]$Content,
@@ -126,25 +81,18 @@ function Convert-ILoggerToSerilog {
     )
     
     $originalContent = $Content
+    $modifiedContent = $Content
     $replacementCount = 0
     
-    # Pattern to match _logger.LogXXX(...) calls with their complete arguments
-    # This is complex because we need to handle multi-line calls and string interpolations
+    # Pattern to match _logger.LogXXX($"string with {vars}") calls
+    # This captures: _logger.LogLevel($"interpolated string")
+    $logCallPattern = '_logger\.Log(Information|Warning|Error|Critical|Debug|Trace)\s*\(\s*\$"([^"]*)"\s*\)'
     
-    # First pass: Convert interpolated strings to structured format
-    # Pattern: _logger.LogLevel($"string with {vars}", otherargs)
-    $logCallPattern = '_logger\.Log(Information|Warning|Error|Critical|Debug|Trace)\s*\(\s*\$"([^"]*)"\s*(?:,\s*(.+?))?\s*\)'
-    
-    $modifiedContent = $Content
-    
-    # Replace string interpolations in logger calls
     $matches_logs = [regex]::Matches($Content, $logCallPattern)
     
     foreach ($match in $matches_logs) {
         $logLevel = $match.Groups[1].Value
-        $targetLevel = $logLevelMap[$("Log$logLevel")]
         $interpolatedStr = $match.Groups[2].Value
-        $otherArgs = $match.Groups[3].Value
         
         # Extract variables from {name} patterns
         $variables = @()
@@ -164,24 +112,15 @@ function Convert-ILoggerToSerilog {
             $formatString = $formatString -replace "\{$varName(?::[^}]*)?\}", "{$capitalizedName}"
         }
         
-        # Build new structured log call
+        # Build new structured log call if variables were found
         if ($variables.Count -gt 0) {
             $varList = $variables -join ", "
             $oldCall = $match.Value
-            $newCall = "_logger.$targetLevel(`"$formatString`", $varList)"
+            $newCall = "_logger.Log$logLevel(`"$formatString`", $varList)"
             
             $modifiedContent = $modifiedContent.Replace($oldCall, $newCall)
             $replacementCount++
         }
-    }
-    
-    # Second pass: Convert _logger.LogLevel calls that weren't interpolated
-    $simpleLogPattern = '_logger\.Log(Information|Warning|Error|Critical|Debug|Trace)\s*\('
-    
-    # Replace method names for non-interpolated logs
-    foreach ($level in $logLevelMap.Keys) {
-        $target = $logLevelMap[$level]
-        $modifiedContent = $modifiedContent -replace "_logger\.$level\(", "_logger.$target("
     }
     
     return @{
