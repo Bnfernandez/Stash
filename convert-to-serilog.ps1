@@ -10,20 +10,17 @@
 .PARAMETER SolutionPath
     Path to the .NET solution directory. Defaults to current directory.
 
-.PARAMETER BackupOriginals
-    If $true, creates backup copies of modified files.
-
 .PARAMETER DryRun
     If $true, shows what would be changed without actually modifying files.
 
 .EXAMPLE
     .\convert-to-serilog.ps1 -SolutionPath "C:\MyProject"
     .\convert-to-serilog.ps1 -DryRun $true
+    .\convert-to-serilog.ps1
 #>
 
 param(
     [string]$SolutionPath = ".",
-    [bool]$BackupOriginals = $true,
     [bool]$DryRun = $false
 )
 
@@ -200,7 +197,6 @@ function Process-CsharpFile {
     )
     
     Write-Host "Processing: $FilePath"
-    [System.IO.Encoding]$encoding = [System.IO.Encoding]::UTF8
     
     try {
         $content = Get-Content -Path $FilePath -Encoding UTF8 -Raw
@@ -211,13 +207,6 @@ function Process-CsharpFile {
             if ($DryRun) {
                 Write-Host "  [DRY RUN] Would apply $($result.ReplacementCount) replacement(s)" -ForegroundColor Cyan
                 return @{ Changed = $true; Count = $result.ReplacementCount }
-            }
-            
-            # Create backup if requested
-            if ($BackupOriginals) {
-                $backupPath = "$FilePath.backup"
-                Copy-Item -Path $FilePath -Destination $backupPath -Force
-                Write-Host "  Backup created: $backupPath" -ForegroundColor Gray
             }
             
             # Write modified content
@@ -328,10 +317,6 @@ function Main {
     
     if ($DryRun) {
         Write-Host "`n  Run without -DryRun to apply changes" -ForegroundColor Yellow
-    }
-    
-    if ($BackupOriginals -and $script:filesModified -gt 0 -and -not $DryRun) {
-        Write-Host "`n  Backups created with .backup extension" -ForegroundColor Cyan
     }
 }
 
