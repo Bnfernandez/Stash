@@ -1,0 +1,12 @@
+public static class MaskExtensions
+{
+    public static string Mask(this string value, int left = 3, int right = 2)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length <= left + right)
+            return value;
+
+        return value[..left]
+             + new string('*', value.Length - left - right)
+             + value[^right..];
+    }
+}
